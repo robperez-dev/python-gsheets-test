@@ -393,6 +393,7 @@ def list_all_diezmadores(spreadsheet_id: str, creds_json: str = "credentials.jso
         raise ValueError("La hoja está vacía o no tiene datos.")
 
     headers = values[0]
+    month_headers = headers[2:-1] if len(headers) > 3 else []
     registros = []
 
     for row in values[1:]:
@@ -401,15 +402,22 @@ def list_all_diezmadores(spreadsheet_id: str, creds_json: str = "credentials.jso
                 nro = row[0] if row[0] else "N/A"
                 nombre = row[1] if len(row) > 1 else "N/A"
                 total = row[-1] if len(row) > 0 else "N/A"
-                
+
                 # Extraer valor numérico del total
                 total_str = str(total).replace("%", "").strip()
                 try:
                     total_num = float(total_str)
                 except ValueError:
                     total_num = 0
-                
-                registros.append((nro, nombre, total, total_num))
+
+                month_values = []
+                for col_idx in range(2, len(headers) - 1):
+                    cell = row[col_idx] if col_idx < len(row) else ""
+                    month_values.append(
+                        "X" if str(cell).upper() in ("TRUE", "VERDADERO", "1") else ""
+                    )
+
+                registros.append((nro, nombre, total, total_num, month_values))
             except Exception:
                 pass
 
@@ -417,14 +425,22 @@ def list_all_diezmadores(spreadsheet_id: str, creds_json: str = "credentials.jso
     registros.sort(key=lambda x: x[3], reverse=True)
 
     resultado = "📊 INFORMACIÓN DE DIEZMADORES (Ordenado por Total Mayor a Menor)\n"
-    resultado += "=" * 60 + "\n"
-    resultado += f"{'Nro':<5} {'Nombres':<35} {'Total':<10}\n"
-    resultado += "-" * 60 + "\n"
+    resultado += "=" * 80 + "\n"
+    header_format = f"{'Nro':<5} {'Nombres':<35}"
+    for month in month_headers:
+        header_format += f" {str(month)[:3]:<3}"
+    header_format += f" {'Total':<10}\n"
+    resultado += header_format
+    resultado += "-" * 80 + "\n"
 
-    for nro, nombre, total, _ in registros:
-        resultado += f"{nro:<5} {nombre:<35} {total:<10}\n"
+    for nro, nombre, total, _, month_values in registros:
+        row_format = f"{nro:<5} {nombre:<35}"
+        for value in month_values:
+            row_format += f" {value:<3}"
+        row_format += f" {total:<10}\n"
+        resultado += row_format
 
-    resultado += "=" * 60 + "\n"
+    resultado += "=" * 80 + "\n"
     resultado += f"Total de registros: {len(registros)}\n"
 
     return resultado
