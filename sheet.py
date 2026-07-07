@@ -143,17 +143,36 @@ def find_header_column(headers: Iterable[str], month: str) -> int:
 def find_name_row(rows: list[list[str]], persona: str, name_column: int) -> int:
     target_name = normalize_text(persona)
     for row_index, row in enumerate(rows[1:], start=2):
+        if len(row) > 0 and normalize_text(row[0]) == target_name:
+            return row_index
         if name_column - 1 < len(row) and normalize_text(row[name_column - 1]) == target_name:
             return row_index
     raise ValueError(f"No se encontró a la persona '{persona}' en la hoja.")
 
 
-def mark_diezmo(spreadsheet_id: str, persona: str, mes: str, creds_json: str = "credentials.json", sheet_name: str | None = None) -> str:
+def count_marked_months(row: list[str], start_col_idx: int = 2, end_col_idx: int | None = None) -> int:
+    """Cuenta cuántas columnas de meses tienen un valor verdadero en la fila."""
+    if end_col_idx is None:
+        end_col_idx = len(row) - 1 if len(row) > 2 else 2
+    count = 0
+    for col_idx in range(start_col_idx, end_col_idx):
+        if col_idx < len(row) and str(row[col_idx]).upper() in ("TRUE", "VERDADERO", "1"):
+            count += 1
+    return count
+
+
+def mark_diezmo(
+    spreadsheet_id: str,
+    persona: str,
+    mes: str,
+    creds_json: str = "credentials.json",
+    sheet_name: str | None = None,
+) -> str:
     """Marca la casilla del mes indicado para la persona indicada.
 
     Args:
         spreadsheet_id: Id del Spreadsheet o nombre del archivo.
-        persona: Nombre completo tal como aparece en la hoja.
+        persona: Nombre completo o número Nro tal como aparece en la hoja.
         mes: Mes a marcar (ej. ENE, Febrero, MAR, ...).
         creds_json: Ruta al JSON de credenciales de servicio.
         sheet_name: Nombre de la pestaña dentro del Spreadsheet. Si no se pasa, usa la primera pestaña.
@@ -206,8 +225,12 @@ def mark_diezmo(spreadsheet_id: str, persona: str, mes: str, creds_json: str = "
     if name_column is None:
         name_column = 2
 
+    if not persona.strip():
+        raise ValueError("Debe indicar el nombre de la persona o el número Nro del tablero.")
+
     month_column = find_header_column(headers, mes)
     row_index = find_name_row(values, persona, name_column)
+
     column_letter = column_index_to_letter(month_column)
     target_range = f"{quoted_sheet}!{column_letter}{row_index}"
 
@@ -306,7 +329,7 @@ def show_diezmos_info(spreadsheet_id: str, persona: str, creds_json: str = "cred
 
     Args:
         spreadsheet_id: Id del Spreadsheet o nombre del archivo.
-        persona: Nombre de la persona.
+        persona: Nombre completo o número Nro de la persona.
         creds_json: Ruta al JSON de credenciales.
         sheet_name: Nombre de la pestaña.
 
@@ -360,14 +383,26 @@ def show_diezmos_info(spreadsheet_id: str, persona: str, creds_json: str = "cred
 
     target_name = normalize_text(persona)
     for row in values[1:]:
-        if name_column - 1 < len(row) and normalize_text(row[name_column - 1]) == target_name:
+        if len(row) > 0 and normalize_text(row[0]) == target_name:
             nro = row[0] if len(row) > 0 else "N/A"
+            nombre_encontrado = row[name_column - 1] if name_column - 1 < len(row) else persona
             meses_marcados = []
             for col_idx, header in enumerate(headers[2:], start=2):
                 if col_idx < len(row) and str(row[col_idx]).upper() in ("TRUE", "VERDADERO", "1"):
                     meses_marcados.append(header)
             total_porcentaje = row[-1] if len(row) > len(headers) - 1 else "N/A"
-            info = f"Nro: {nro}\nNombre: {persona}\nMeses marcados: {', '.join(meses_marcados) if meses_marcados else 'Ninguno'}\nPorcentaje Total: {total_porcentaje}"
+            info = f"Nro: {nro}\nNombre: {nombre_encontrado}\nMeses marcados: {', '.join(meses_marcados) if meses_marcados else 'Ninguno'}\nPorcentaje Total: {total_porcentaje}"
+            return info
+
+        if name_column - 1 < len(row) and normalize_text(row[name_column - 1]) == target_name:
+            nro = row[0] if len(row) > 0 else "N/A"
+            nombre_encontrado = row[name_column - 1] if name_column - 1 < len(row) else persona
+            meses_marcados = []
+            for col_idx, header in enumerate(headers[2:], start=2):
+                if col_idx < len(row) and str(row[col_idx]).upper() in ("TRUE", "VERDADERO", "1"):
+                    meses_marcados.append(header)
+            total_porcentaje = row[-1] if len(row) > len(headers) - 1 else "N/A"
+            info = f"Nro: {nro}\nNombre: {nombre_encontrado}\nMeses marcados: {', '.join(meses_marcados) if meses_marcados else 'Ninguno'}\nPorcentaje Total: {total_porcentaje}"
             return info
 
     raise ValueError(f"No se encontró a la persona '{persona}' en la hoja.")
@@ -474,13 +509,19 @@ def list_all_diezmadores(spreadsheet_id: str, creds_json: str = "credentials.jso
     return resultado
 
 
-def list_non_diezmadores(spreadsheet_id: str, creds_json: str = "credentials.json", sheet_name: str | None = None) -> str:
-    """Lista todas las personas que no tienen ningún mes marcado.
+def list_non_diezmadores(
+    spreadsheet_id: str,
+    creds_json: str = "credentials.json",
+    sheet_name: str | None = None,
+    diezmaciones: int | None = None,
+) -> str:
+    """Lista personas según la cantidad de meses marcados.
 
     Args:
         spreadsheet_id: Id del Spreadsheet o nombre del archivo.
         creds_json: Ruta al JSON de credenciales.
         sheet_name: Nombre de la pestaña.
+        diezmaciones: Cantidad exacta de diezmaciones a filtrar. Si es None, usa 0.
 
     Returns:
         Información formateada con resumen.
@@ -524,6 +565,7 @@ def list_non_diezmadores(spreadsheet_id: str, creds_json: str = "credentials.jso
     headers = values[0]
     no_diezmadores = []
     total_personas = 0
+    target_diezmaciones = 0 if diezmaciones is None else int(diezmaciones)
 
     for row in values[1:]:
         if len(row) >= 2 and row[0] and str(row[0]).strip().isdigit():
@@ -531,31 +573,30 @@ def list_non_diezmadores(spreadsheet_id: str, creds_json: str = "credentials.jso
             nro = row[0]
             nombre = row[1] if len(row) > 1 else "N/A"
             total = row[-1] if len(row) > 0 else "N/A"
+            cantidad_diezmos = count_marked_months(row, start_col_idx=2, end_col_idx=len(row) - 1)
 
-            # Verificar si ningún mes está marcado (columnas 2 a -1, excluyendo Total)
-            tiene_diezmo = False
-            for col_idx in range(2, len(row) - 1):
-                if str(row[col_idx]).upper() in ("TRUE", "VERDADERO", "1"):
-                    tiene_diezmo = True
-                    break
+            if cantidad_diezmos == target_diezmaciones:
+                no_diezmadores.append((nro, nombre, total, cantidad_diezmos))
 
-            if not tiene_diezmo:
-                no_diezmadores.append((nro, nombre, total))
+    if target_diezmaciones == 0:
+        titulo = "⚠️  PERSONAS SIN DIEZMACIONES REGISTRADAS"
+    else:
+        titulo = f"📋  PERSONAS CON {target_diezmaciones} DIEZMACIONES REGISTRADAS"
 
-    resultado = "⚠️  PERSONAS SIN DIEZMACIONES REGISTRADAS\n"
-    resultado += "=" * 60 + "\n"
-    resultado += f"{'Nro':<5} {'Nombres':<35} {'Total':<10}\n"
-    resultado += "-" * 60 + "\n"
+    resultado = f"{titulo}\n"
+    resultado += "=" * 70 + "\n"
+    resultado += f"{'Nro':<5} {'Nombres':<35} {'Diezmos':<8} {'Total':<10}\n"
+    resultado += "-" * 70 + "\n"
 
-    for nro, nombre, total in no_diezmadores:
-        resultado += f"{nro:<5} {nombre:<35} {total:<10}\n"
+    for nro, nombre, total, cantidad_diezmos in no_diezmadores:
+        resultado += f"{nro:<5} {nombre:<35} {cantidad_diezmos:<8} {total:<10}\n"
 
-    resultado += "=" * 60 + "\n"
-    
+    resultado += "=" * 70 + "\n"
+
     if total_personas > 0:
-        porcentaje_no_diezmo = (len(no_diezmadores) / total_personas) * 100
-        resultado += f"Personas sin diezmaciones: {len(no_diezmadores)} de {total_personas}\n"
-        resultado += f"Porcentaje de personas sin diezmaciones: {porcentaje_no_diezmo:.2f}%\n"
+        porcentaje = (len(no_diezmadores) / total_personas) * 100
+        resultado += f"Personas encontradas: {len(no_diezmadores)} de {total_personas}\n"
+        resultado += f"Porcentaje: {porcentaje:.2f}%\n"
     else:
         resultado += "No hay registros de personas.\n"
 
@@ -928,7 +969,7 @@ def menu_gestion_tablero(spreadsheet_ref: str, creds_json: str = "credentials.js
         opcion = input("Seleccione una opción (1-6): ").strip()
 
         if opcion == "1":
-            persona = input("Nombre de la persona: ").strip()
+            persona = input("Nro o nombre de la persona: ").strip()
             mes = input("Mes (ej. ENE, FEB): ").strip()
             try:
                 mark_diezmo(spreadsheet_ref, persona, mes, creds_json, sheet_name)
@@ -945,7 +986,7 @@ def menu_gestion_tablero(spreadsheet_ref: str, creds_json: str = "credentials.js
                 print(f"❌ Error: {e}")
 
         elif opcion == "3":
-            persona = input("Nombre de la persona: ").strip()
+            persona = input("Nro o nombre de la persona: ").strip()
             try:
                 info = show_diezmos_info(spreadsheet_ref, persona, creds_json, sheet_name)
                 print(f"\n{info}")
@@ -960,9 +1001,13 @@ def menu_gestion_tablero(spreadsheet_ref: str, creds_json: str = "credentials.js
                 print(f"❌ Error: {e}")
 
         elif opcion == "5":
+            cantidad = input("Cantidad de diezmaciones a mostrar (0=ninguna, 3=tres veces, dejar vacío para 0): ").strip()
             try:
-                info = list_non_diezmadores(spreadsheet_ref, creds_json, sheet_name)
+                cantidad_num = int(cantidad) if cantidad else 0
+                info = list_non_diezmadores(spreadsheet_ref, creds_json, sheet_name, diezmaciones=cantidad_num)
                 print(f"\n{info}")
+            except ValueError:
+                print("❌ Debe ingresar un número válido.")
             except Exception as e:
                 print(f"❌ Error: {e}")
 
@@ -1012,6 +1057,7 @@ def menu_principal(spreadsheet_ref: str, creds_json: str = "credentials.json", s
     while True:
         print("\n" + "="*60)
         print(" SISTEMA DE GESTIÓN DE DIEZMOS SILOE")
+        print(" by robperezsystem - v1.2")
         print("="*60)
         print("1. Gestión de Tablero de Diezmos")
         print("2. Gestión de Sobres de Diezmos")

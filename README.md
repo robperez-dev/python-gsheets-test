@@ -185,7 +185,19 @@ Normaliza texto para búsquedas case-insensitive.
 - Asegúrate que las celdas sean tipo "Checkbox" en Google Sheets
 - Verifica que el número de fila y columna sean correctos
 
-## 📞 Soporte
+## � Generar ejecutables por versión
+
+Puedes usar el script de PowerShell para crear una nueva versión sin sobrescribir la anterior:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build_release.ps1 -Version "v1.3"
+```
+
+Eso generará archivos como:
+- Gestor-Diezmos-v1.3.exe
+- Sistema-Gestor-Diezmos-v1.3.exe
+
+## �📞 Soporte
 
 Para reportar errores o sugerencias, contacta al administrador del proyecto.
 
