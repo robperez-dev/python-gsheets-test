@@ -1,3 +1,4 @@
+import json
 import os
 import re
 from typing import Iterable
@@ -37,10 +38,37 @@ MONTH_MAP = {
     "DIC": "DIC",
     "DICIEMBRE": "DIC",
 }
+DEFAULT_DIEZMADORES_FOLDER_ID = "14d72317gO2jg5iM6vnPy16pV1raqVdme"
 
 
 def normalize_text(value: str) -> str:
     return re.sub(r"\s+", "", str(value).strip().lower())
+
+
+def parse_monto(value: str) -> float:
+    text = str(value).strip()
+    if not text:
+        raise ValueError("Monto vacío.")
+
+    text = text.replace("Bs.", "").replace("Bs", "").replace("$", "").strip()
+    has_comma = "," in text
+    has_dot = "." in text
+
+    if has_dot and has_comma:
+        text = text.replace(".", "").replace(",", ".")
+    elif has_comma:
+        text = text.replace(",", ".")
+
+    try:
+        return float(text)
+    except ValueError as exc:
+        raise ValueError(f"Monto inválido: '{value}'. Use números con coma decimal, por ejemplo 600,00.") from exc
+
+
+def format_currency_bs(value: float) -> str:
+    formatted = f"{value:,.2f}"
+    # Cambiar separador de miles a punto y separador decimal a coma
+    return "Bs. " + formatted.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
 def get_credentials(creds_json: str = "credentials.json"):
@@ -534,39 +562,393 @@ def list_non_diezmadores(spreadsheet_id: str, creds_json: str = "credentials.jso
     return resultado
 
 
-def menu_principal(spreadsheet_ref: str, creds_json: str = "credentials.json", sheet_name: str = "2026"):
+# =============================================================================
+# NUEVAS FUNCIONES PARA GESTIÓN DE SOBRES DE DIEZMOS
+# =============================================================================
+
+def normalize_month_label(value: str) -> str:
+    """Normaliza etiquetas de meses a formato estándar (ENE, FEB, etc.)."""
+    normalized = normalize_text(value).upper()
+    return MONTH_MAP.get(normalized, normalized)
+
+
+def resolve_folder_id(folder_ref: str, creds_json: str = "credentials.json") -> str:
+    """Resuelve ID de carpeta desde URL o ID directo."""
+    folder_ref = str(folder_ref).strip()
+    # Si contiene URL de Drive, extrae el ID
+    if "drive.google.com" in folder_ref and "/folders/" in folder_ref:
+        return folder_ref.split("/folders/")[-1].split("?")[0]
+    # Si es ID válido (largo y caracteres válidos)
+    if re.fullmatch(r"[a-zA-Z0-9_-]+", folder_ref) and len(folder_ref) > 15:
+        return folder_ref
+    # Si no, usa el ID por defecto
+    return DEFAULT_DIEZMADORES_FOLDER_ID
+
+
+def list_person_files(folder_id: str, creds_json: str = "credentials.json") -> list[dict]:
+    """Lista todos los archivos de personas en la carpeta."""
+    drive_service = get_service(creds_json, service_name="drive", version="v3")
+    query = f"'{folder_id}' in parents and mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false"
+    response = drive_service.files().list(
+        q=query,
+        fields="files(id,name)",
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
+        corpora="allDrives",
+    ).execute()
+    return response.get("files", [])
+
+
+def search_spreadsheets_by_name(query_name: str, creds_json: str = "credentials.json") -> list[dict]:
+    """Busca spreadsheets por nombre en Drive cuando la carpeta no devuelve resultados."""
+    drive_service = get_service(creds_json, service_name="drive", version="v3")
+    safe_name = query_name.replace("'", "''")
+    queries = [
+        f"name contains '{safe_name}' and mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false",
+        f"name = '{safe_name}' and mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false",
+    ]
+
+    for query in queries:
+        response = drive_service.files().list(
+            q=query,
+            fields="files(id,name)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+            corpora="allDrives",
+        ).execute()
+        files = response.get("files", [])
+        if files:
+            return files
+    return []
+
+
+def get_service_account_email(creds_json: str = "credentials.json") -> str:
+    """Devuelve el correo de la cuenta de servicio si está disponible."""
+    if not os.path.exists(creds_json):
+        return ""
+    try:
+        with open(creds_json, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data.get("client_email", "")
+    except Exception:
+        return ""
+
+
+def extract_person_info(filename: str) -> tuple[str, str]:
+    """Extrae código y nombre de la persona del nombre del archivo.
+
+    Formatos aceptados:
+    - 005-Roberto Perez Paredes-Diezmos-SILOE
+    - 005-Roberto Perez Paredes-SILOE
+    - 005-Roberto Perez Paredes
+    """
+    name_clean = filename.replace(".gsheet", "").replace(".xlsx", "").strip()
+    suffixes = ["-SILOE", "-DIEZMOS", "-DIEZMOS", "-SILOE"]
+    for suffix in suffixes:
+        if name_clean.upper().endswith(suffix.upper()):
+            name_clean = name_clean[: -len(suffix)].rstrip("-")
+            break
+
+    parts = [part.strip() for part in name_clean.split("-") if part.strip()]
+    if len(parts) >= 2:
+        codigo = parts[0]
+        nombre = " ".join(parts[1:]).strip()
+        return codigo, nombre
+
+    return "", name_clean
+
+
+def find_person_spreadsheet(folder_id: str, persona_ref: str, creds_json: str = "credentials.json") -> dict:
+    """Busca archivo de persona por código o nombre."""
+    persona_norm = normalize_text(persona_ref).upper()
+
+    files = list_person_files(folder_id, creds_json)
+    if not files:
+        files = search_spreadsheets_by_name(persona_ref, creds_json)
+
+    for file in files:
+        codigo, nombre = extract_person_info(file["name"])
+        code_norm = normalize_text(codigo).upper()
+        name_norm = normalize_text(nombre).upper()
+
+        if persona_norm == code_norm or persona_norm in name_norm:
+            return file
+
+    if not files:
+        account_email = get_service_account_email(creds_json)
+        if account_email:
+            raise ValueError(
+                f"No se encontró el archivo para '{persona_ref}'. Verifique que la carpeta sea compartida con la cuenta de servicio '{account_email}' y que el ID de carpeta sea correcto."
+            )
+        raise ValueError(
+            f"No se encontró el archivo para '{persona_ref}'. Verifique el ID de la carpeta y los permisos de Drive."
+        )
+
+    raise ValueError(f"No se encontró archivo para '{persona_ref}' en la carpeta.")
+
+
+def find_header_row(rows: list[list[str]]) -> tuple[int, list[str]]:
+    """Encuentra la fila de encabezados que contiene 'MES' y las columnas D1-D5."""
+    for row_idx, row in enumerate(rows, start=1):
+        if any(normalize_text(cell).upper() == "MES" for cell in row):
+            return row_idx, row
+    raise ValueError("No se encontró la fila de encabezados con 'MES'.")
+
+
+def find_month_row(rows: list[list[str]], month: str, start_row: int = 1) -> int:
+    """Encuentra la fila que contiene el mes especificado en la primera columna."""
+    month_norm = normalize_month_label(month)
+    for offset, row in enumerate(rows[start_row - 1 :], start=0):
+        if not row:
+            continue
+        cell = row[0] if len(row) > 0 else ""
+        if normalize_month_label(cell) == month_norm:
+            return start_row + offset
+    raise ValueError(f"No se encontró mes '{month}' en la hoja.")
+
+
+def find_sunday_column(headers: Iterable[str], domingo: str | int) -> int:
+    """Encuentra columna del domingo (D1, D2, D3, D4, D5)."""
+    domingo_str = str(domingo).strip().upper()
+    if not domingo_str.startswith("D"):
+        domingo_str = f"D{domingo_str}"
+    
+    for idx, header in enumerate(headers, start=1):
+        header_norm = normalize_text(header).upper()
+        if header_norm == normalize_text(domingo_str).upper():
+            return idx
+    raise ValueError(f"No se encontró columna para '{domingo}'. Esperado: D1-D5")
+
+
+def registrar_monto_sobre(persona_ref: str, mes: str, domingo: str | int, monto: float | str,
+                         folder_id: str = DEFAULT_DIEZMADORES_FOLDER_ID,
+                         creds_json: str = "credentials.json", year: int = 2026) -> str:
+    """Registra monto en el sobre de una persona."""
+    person_file = find_person_spreadsheet(folder_id, persona_ref, creds_json)
+    spreadsheet_id = person_file["id"]
+    codigo, nombre = extract_person_info(person_file["name"])
+    
+    if not isinstance(monto, (int, float)):
+        monto = parse_monto(monto)
+
+    service = get_service(creds_json)
+    
+    spreadsheet = service.spreadsheets().get(
+        spreadsheetId=spreadsheet_id,
+        fields="sheets(properties(title))"
+    ).execute()
+    sheets = [sheet["properties"]["title"] for sheet in spreadsheet.get("sheets", [])]
+    
+    sheet_name = None
+    for sheet in sheets:
+        if str(year) in sheet:
+            sheet_name = sheet
+            break
+    if not sheet_name:
+        sheet_name = sheets[0]
+    
+    quoted_sheet = quote_sheet_name(sheet_name)
+    response = service.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=f"{quoted_sheet}!A:Z"
+    ).execute()
+    
+    values = response.get("values", [])
+    if not values:
+        raise ValueError(f"Hoja '{sheet_name}' esta vacía.")
+    
+    header_row_index, headers = find_header_row(values)
+    month_row = find_month_row(values, mes, start_row=header_row_index + 1)
+    sunday_col = find_sunday_column(headers, domingo)
+    
+    col_letter = column_index_to_letter(sunday_col)
+    target_range = f"{quoted_sheet}!{col_letter}{month_row}"
+    
+    service.spreadsheets().values().update(
+        spreadsheetId=spreadsheet_id,
+        range=target_range,
+        valueInputOption="USER_ENTERED",
+        body={"values": [[float(monto)]]}
+    ).execute()
+    
+    mensaje_monto = format_currency_bs(float(monto))
+    return f"{mensaje_monto} registrado en {nombre} ({codigo}) - {normalize_month_label(mes)} - {domingo}"
+
+
+def generar_reporte_sobre(persona_ref: str, folder_id: str = DEFAULT_DIEZMADORES_FOLDER_ID,
+                         creds_json: str = "credentials.json", year: int = 2026) -> str:
+    """Genera reporte individual de una persona."""
+    person_file = find_person_spreadsheet(folder_id, persona_ref, creds_json)
+    spreadsheet_id = person_file["id"]
+    codigo, nombre = extract_person_info(person_file["name"])
+    
+    service = get_service(creds_json)
+    spreadsheet = service.spreadsheets().get(
+        spreadsheetId=spreadsheet_id,
+        fields="sheets(properties(title))"
+    ).execute()
+    sheets = [sheet["properties"]["title"] for sheet in spreadsheet.get("sheets", [])]
+    
+    sheet_name = None
+    for sheet in sheets:
+        if str(year) in sheet:
+            sheet_name = sheet
+            break
+    if not sheet_name:
+        sheet_name = sheets[0]
+    
+    quoted_sheet = quote_sheet_name(sheet_name)
+    response = service.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=f"{quoted_sheet}!A:Z"
+    ).execute()
+    
+    values = response.get("values", [])
+    if not values:
+        raise ValueError(f"Hoja '{sheet_name}' está vacía.")
+
+    header_row_index, headers = find_header_row(values)
+    sunday_columns = [idx for idx, header in enumerate(headers) if normalize_text(header) in {"d1", "d2", "d3", "d4", "d5"}]
+    if not sunday_columns:
+        raise ValueError("No se encontraron columnas D1-D5 en el reporte individual.")
+    total_col_idx = next((idx for idx, header in enumerate(headers) if normalize_text(header) == "total"), len(headers) - 1)
+
+    reporte = f"\n📋 REPORTE DE SOBRE\n"
+    reporte += f"Persona: {nombre} ({codigo})\n"
+    reporte += f"Año: {year} | Hoja: {sheet_name}\n"
+    reporte += "=" * 110 + "\n"
+    reporte += f"{'MES':<15} {'D1':<12} {'D2':<12} {'D3':<12} {'D4':<12} {'D5':<12} {'Total':<12}\n"
+    reporte += "-" * 110 + "\n"
+
+    total_sum = 0.0
+    for row in values[header_row_index:]:
+        if not row or not str(row[0]).strip():
+            continue
+        mes = str(row[0]).strip()
+        if mes.upper() == "TOTAL":
+            continue
+
+        valores_domingo = [str(row[col_idx]).strip() if col_idx < len(row) else "" for col_idx in sunday_columns]
+        total_value = str(row[total_col_idx]).strip() if total_col_idx < len(row) else ""
+        total_num = 0.0
+        if total_value:
+            try:
+                total_num = parse_monto(total_value)
+            except ValueError:
+                try:
+                    total_num = float(total_value.replace(",", "."))
+                except Exception:
+                    total_num = 0.0
+
+        total_sum += total_num
+        reporte += f"{mes:<15}"
+        for val in valores_domingo:
+            reporte += f" {val:<12}"
+        reporte += f" {total_value:<12}\n"
+
+    reporte += "=" * 110 + "\n"
+    reporte += f"Suma de Totales: {format_currency_bs(total_sum)}\n"
+    reporte += "=" * 110 + "\n"
+    return reporte
+
+
+def generar_reporte_por_mes(mes: str, folder_id: str = DEFAULT_DIEZMADORES_FOLDER_ID,
+                           creds_json: str = "credentials.json", year: int = 2026) -> str:
+    """Genera reporte de todas las personas para un mes especifico."""
+    files = list_person_files(folder_id, creds_json)
+    mes_norm = normalize_month_label(mes)
+    
+    reporte = f"\n📊 REPORTE POR MES - {mes_norm} ({year})\n"
+    reporte += "=" * 80 + "\n"
+    reporte += f"{'Codigo':<10} {'Nombre':<35} {'D1':<12} {'D2':<12} {'D3':<12} {'D4':<12} {'D5':<12}\n"
+    reporte += "-" * 80 + "\n"
+    
+    for file in files:
+        try:
+            codigo, nombre = extract_person_info(file["name"])
+            spreadsheet_id = file["id"]
+            
+            service = get_service(creds_json)
+            spreadsheet = service.spreadsheets().get(
+                spreadsheetId=spreadsheet_id,
+                fields="sheets(properties(title))"
+            ).execute()
+            sheets = [sheet["properties"]["title"] for sheet in spreadsheet.get("sheets", [])]
+            
+            sheet_name = None
+            for sheet in sheets:
+                if str(year) in sheet:
+                    sheet_name = sheet
+                    break
+            if not sheet_name:
+                sheet_name = sheets[0]
+            
+            quoted_sheet = quote_sheet_name(sheet_name)
+            response = service.spreadsheets().values().get(
+                spreadsheetId=spreadsheet_id,
+                range=f"{quoted_sheet}!A:Z"
+            ).execute()
+            
+            values = response.get("values", [])
+            
+            month_row_idx = None
+            for row_idx, row in enumerate(values):
+                if row and normalize_month_label(row[0]) == mes_norm:
+                    month_row_idx = row_idx
+                    break
+            
+            if month_row_idx is not None:
+                row = values[month_row_idx]
+                valores_domingo = []
+                for col_idx in range(1, 6):
+                    val = row[col_idx] if col_idx < len(row) else ""
+                    valores_domingo.append(str(val).strip())
+                
+                fila = f"{codigo:<10} {nombre:<35}"
+                for val in valores_domingo:
+                    fila += f" {val:<12}"
+                reporte += fila + "\n"
+        except Exception as e:
+            reporte += f"Aviso en {file['name']}: {str(e)}\n"
+    
+    reporte += "=" * 80 + "\n"
+    return reporte
+
+
+def menu_gestion_tablero(spreadsheet_ref: str, creds_json: str = "credentials.json", sheet_name: str = "2026"):
+    """Menú para gestionar Tablero de Diezmos (funcionamiento anterior)."""
     while True:
-        print("\n=== CONTROL Tablero de Diezmos SILOE===")
-        print("1. Actualizar Tablero Diezmo")
-        print("2. Agregar Persona al Tablero")
-        print("3. Mostrar Información de Diezmos (Individual)")
-        print("4. Mostrar Información Diezmadores (Ordenado por Total)")
-        print("5. Mostrar Personas Sin Diezmaciones")
-        print("6. Salir")
+        print("\n=== GESTIÓN DE TABLERO DE DIEZMOS ===")
+        print("1. Actualizar Diezmo")
+        print("2. Agregar Persona")
+        print("3. Información Individual")
+        print("4. Listar Todos los Diezmadores")
+        print("5. Listar Personas Sin Diezmaciones")
+        print("6. Volver")
         opcion = input("Seleccione una opción (1-6): ").strip()
 
         if opcion == "1":
-            persona = input("Ingrese el nombre de la persona: ").strip()
-            mes = input("Ingrese el mes a marcar (ej. ENE, FEB, MAR): ").strip()
+            persona = input("Nombre de la persona: ").strip()
+            mes = input("Mes (ej. ENE, FEB): ").strip()
             try:
-                updated_range = mark_diezmo(spreadsheet_ref, persona, mes, creds_json, sheet_name)
-                print(f"✅ Casilla marcada en: {updated_range}")
+                mark_diezmo(spreadsheet_ref, persona, mes, creds_json, sheet_name)
+                print("✅ Diezmo marcado correctamente.")
             except Exception as e:
                 print(f"❌ Error: {e}")
 
         elif opcion == "2":
-            nombre = input("Ingrese el nombre de la nueva persona: ").strip()
+            nombre = input("Nombre de la nueva persona: ").strip()
             try:
-                added_range = add_persona(spreadsheet_ref, nombre, creds_json, sheet_name)
-                print(f"✅ Persona agregada en: {added_range}")
+                add_persona(spreadsheet_ref, nombre, creds_json, sheet_name)
+                print("✅ Persona agregada correctamente.")
             except Exception as e:
                 print(f"❌ Error: {e}")
 
         elif opcion == "3":
-            persona = input("Ingrese el nombre de la persona: ").strip()
+            persona = input("Nombre de la persona: ").strip()
             try:
                 info = show_diezmos_info(spreadsheet_ref, persona, creds_json, sheet_name)
-                print(f"\n📊 Información de Diezmos:\n{info}")
+                print(f"\n{info}")
             except Exception as e:
                 print(f"❌ Error: {e}")
 
@@ -585,7 +967,71 @@ def menu_principal(spreadsheet_ref: str, creds_json: str = "credentials.json", s
                 print(f"❌ Error: {e}")
 
         elif opcion == "6":
-            print("👋 Saliendo...")
+            break
+        else:
+            print("❌ Opción inválida.")
+
+
+def menu_gestion_sobres(folder_id: str = DEFAULT_DIEZMADORES_FOLDER_ID,
+                       creds_json: str = "credentials.json", year: int = 2026):
+    """Menú para gestionar Sobres de Diezmos (nuevas funcionalidades)."""
+    while True:
+        print(f"\n=== GESTIÓN DE SOBRES DE DIEZMOS {year} ===")
+        print("1. Registrar Monto")
+        print("2. Reporte de Persona")
+        print("3. Volver")
+        opcion = input("Seleccione una opción (1-3): ").strip()
+
+        if opcion == "1":
+            persona = input("Código o nombre de persona: ").strip()
+            mes = input("Mes (ej. ENE, FEB, jul): ").strip()
+            domingo = input("Número de domingo (1-5 o D1-D5): ").strip()
+            monto = input("Monto a registrar: ").strip()
+            try:
+                resultado = registrar_monto_sobre(persona, mes, domingo, monto, folder_id, creds_json, year)
+                print(resultado)
+            except Exception as e:
+                print(f"❌ Error: {e}")
+
+        elif opcion == "2":
+            persona = input("Código o nombre de persona: ").strip()
+            try:
+                reporte = generar_reporte_sobre(persona, folder_id, creds_json, year)
+                print(reporte)
+            except Exception as e:
+                print(f"❌ Error: {e}")
+
+        elif opcion == "3":
+            break
+        else:
+            print("❌ Opción inválida.")
+
+
+def menu_principal(spreadsheet_ref: str, creds_json: str = "credentials.json", sheet_name: str = "2026"):
+    """Menú principal redesñado con dos áreas de gestión."""
+    while True:
+        print("\n" + "="*60)
+        print(" SISTEMA DE GESTIÓN DE DIEZMOS SILOE")
+        print("="*60)
+        print("1. Gestión de Tablero de Diezmos")
+        print("2. Gestión de Sobres de Diezmos")
+        print("3. Limpiar pantalla")
+        print("4. Salir")
+        print("="*60)
+        opcion = input("Seleccione una opción (1-4): ").strip()
+
+        if opcion == "1":
+            menu_gestion_tablero(spreadsheet_ref, creds_json, sheet_name)
+
+        elif opcion == "2":
+            menu_gestion_sobres(creds_json=creds_json, year=int(sheet_name) if sheet_name.isdigit() else 2026)
+
+        elif opcion == "3":
+            os.system('cls' if os.name == 'nt' else 'clear')
+            print("✨ Pantalla limpia")
+
+        elif opcion == "4":
+            print("👋 ¡Hasta luego!")
             break
 
         else:
