@@ -509,6 +509,123 @@ def list_all_diezmadores(spreadsheet_id: str, creds_json: str = "credentials.jso
     return resultado
 
 
+def list_active_diezmadores(spreadsheet_id: str, creds_json: str = "credentials.json", sheet_name: str | None = None) -> str:
+    """Lista solo los diezmadores que tienen al menos 1 mes marcado (filtrados).
+
+    Args:
+        spreadsheet_id: Id del Spreadsheet o nombre del archivo.
+        creds_json: Ruta al JSON de credenciales.
+        sheet_name: Nombre de la pestaña.
+
+    Returns:
+        Información formateada.
+    """
+    spreadsheet_id = resolve_spreadsheet_id(spreadsheet_id, creds_json)
+    service = get_service(creds_json)
+
+    try:
+        spreadsheet = service.spreadsheets().get(
+            spreadsheetId=spreadsheet_id,
+            fields="properties.title,sheets(properties(title))",
+        ).execute()
+    except HttpError as exc:
+        raise ValueError(
+            "No se puede abrir el spreadsheet. Verifique el ID y los permisos del archivo."
+        ) from exc
+
+    sheets = [sheet["properties"]["title"] for sheet in spreadsheet.get("sheets", [])]
+    if not sheets:
+        raise ValueError("El spreadsheet no tiene pestañas visibles.")
+
+    if sheet_name is None:
+        sheet_name = sheets[0]
+    elif sheet_name not in sheets:
+        raise ValueError(
+            f"La hoja '{sheet_name}' no existe. Hojas disponibles: {', '.join(sheets)}"
+        )
+
+    quoted_sheet = quote_sheet_name(sheet_name)
+    range_name = f"{quoted_sheet}!A:Z"
+    response = service.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=range_name,
+        majorDimension="ROWS",
+    ).execute()
+
+    values = response.get("values", [])
+    if not values or len(values) < 2:
+        raise ValueError("La hoja está vacía o no tiene datos.")
+
+    headers = values[0]
+    month_headers = headers[2:-1] if len(headers) > 3 else []
+    registros = []
+    total_personas = 0
+    total_inactivos = 0
+
+    for row in values[1:]:
+        if len(row) >= 2:
+            try:
+                nro = row[0] if row[0] else "N/A"
+                nombre = row[1] if len(row) > 1 else "N/A"
+                total = row[-1] if len(row) > 0 else "N/A"
+
+                # Extraer valor numérico del total
+                total_str = str(total).replace("%", "").strip()
+                try:
+                    total_num = float(total_str)
+                except ValueError:
+                    total_num = 0
+
+                month_values = []
+                has_mark = False
+                for col_idx in range(2, len(headers) - 1):
+                    cell = row[col_idx] if col_idx < len(row) else ""
+                    is_marked = str(cell).upper() in ("TRUE", "VERDADERO", "1")
+                    month_values.append("X" if is_marked else "")
+                    if is_marked:
+                        has_mark = True
+
+                total_personas += 1
+                # Solo agregar si tiene al menos 1 mes marcado
+                if has_mark:
+                    registros.append((nro, nombre, total, total_num, month_values))
+                else:
+                    total_inactivos += 1
+            except Exception:
+                pass
+
+    # Ordenar por total descendente
+    registros.sort(key=lambda x: x[3], reverse=True)
+
+    resultado = "📊 DIEZMADORES ACTIVOS (Con al menos 1 marcado - Ordenado por Total Mayor a Menor)\n"
+    resultado += "=" * 80 + "\n"
+    header_format = f"{'Nro':<5} {'Nombres':<35}"
+    for month in month_headers:
+        header_format += f" {str(month)[:3]:<3}"
+    header_format += f" {'Total':<10}\n"
+    resultado += header_format
+    resultado += "-" * 80 + "\n"
+
+    for nro, nombre, total, _, month_values in registros:
+        row_format = f"{nro:<5} {nombre:<35}"
+        for value in month_values:
+            row_format += f" {value:<3}"
+        row_format += f" {total:<10}\n"
+        resultado += row_format
+
+    resultado += "=" * 80 + "\n"
+    
+    if total_personas > 0:
+        porcentaje_activos = (len(registros) / total_personas) * 100
+        porcentaje_inactivos = (total_inactivos / total_personas) * 100
+        resultado += f"Diezmadores activos: {len(registros)} de {total_personas} ({porcentaje_activos:.2f}%)\n"
+        resultado += f"Diezmadores inactivos (sin marcar): {total_inactivos} de {total_personas} ({porcentaje_inactivos:.2f}%)\n"
+    else:
+        resultado += "No hay registros de personas.\n"
+
+    return resultado
+
+
 def list_non_diezmadores(
     spreadsheet_id: str,
     creds_json: str = "credentials.json",
@@ -964,9 +1081,10 @@ def menu_gestion_tablero(spreadsheet_ref: str, creds_json: str = "credentials.js
         print("2. Agregar Persona")
         print("3. Información Individual")
         print("4. Listar Todos los Diezmadores")
-        print("5. Listar Personas Sin Diezmaciones")
-        print("6. Volver")
-        opcion = input("Seleccione una opción (1-6): ").strip()
+        print("5. Listar Diezmadores Activos (Con al menos 1 marcado)")
+        print("6. Listar Personas Sin Diezmaciones")
+        print("7. Volver")
+        opcion = input("Seleccione una opción (1-7): ").strip()
 
         if opcion == "1":
             persona = input("Nro o nombre de la persona: ").strip()
@@ -1001,6 +1119,13 @@ def menu_gestion_tablero(spreadsheet_ref: str, creds_json: str = "credentials.js
                 print(f"❌ Error: {e}")
 
         elif opcion == "5":
+            try:
+                info = list_active_diezmadores(spreadsheet_ref, creds_json, sheet_name)
+                print(f"\n{info}")
+            except Exception as e:
+                print(f"❌ Error: {e}")
+
+        elif opcion == "6":
             cantidad = input("Cantidad de diezmaciones a mostrar (0=ninguna, 3=tres veces, dejar vacío para 0): ").strip()
             try:
                 cantidad_num = int(cantidad) if cantidad else 0
@@ -1011,7 +1136,7 @@ def menu_gestion_tablero(spreadsheet_ref: str, creds_json: str = "credentials.js
             except Exception as e:
                 print(f"❌ Error: {e}")
 
-        elif opcion == "6":
+        elif opcion == "7":
             break
         else:
             print("❌ Opción inválida.")

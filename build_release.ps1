@@ -14,11 +14,15 @@ $specs = @(
 foreach ($item in $specs) {
     $tempSpec = Join-Path $env:TEMP "$($item.BaseName)-$Version.spec"
     $content = Get-Content $item.Spec -Raw
+    # Reemplazar el nombre del ejecutable y la ruta de sheet.py con forward slashes
+    $repoSheetPath = Join-Path $repoRoot "sheet.py"
+    $repoSheetPath = $repoSheetPath -replace '\\', '/'
     $updated = $content -replace "name='[^']+'", "name='$($item.BaseName)-$Version'"
+    $updated = $updated -replace "\['sheet\.py'\]", "['$repoSheetPath']"
     Set-Content -Path $tempSpec -Value $updated -Encoding utf8
 
     Write-Host "Generando $($item.BaseName)-$Version.exe..."
-    py -3 -m PyInstaller --noconfirm --distpath .\dist $tempSpec
+    py -3 -m PyInstaller --noconfirm --distpath "$repoRoot\dist" "$tempSpec"
 
     Remove-Item $tempSpec -Force -ErrorAction SilentlyContinue
 }
