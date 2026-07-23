@@ -488,13 +488,13 @@ def list_all_diezmadores(spreadsheet_id: str, creds_json: str = "credentials.jso
     registros.sort(key=lambda x: x[3], reverse=True)
 
     resultado = "📊 INFORMACIÓN DE DIEZMADORES (Ordenado por Total Mayor a Menor)\n"
-    resultado += "=" * 80 + "\n"
+    resultado += "=" * 100 + "\n"
     header_format = f"{'Nro':<5} {'Nombres':<35}"
     for month in month_headers:
         header_format += f" {str(month)[:3]:<3}"
     header_format += f" {'Total':<10}\n"
     resultado += header_format
-    resultado += "-" * 80 + "\n"
+    resultado += "-" * 100 + "\n"
 
     for nro, nombre, total, _, month_values in registros:
         row_format = f"{nro:<5} {nombre:<35}"
@@ -503,7 +503,7 @@ def list_all_diezmadores(spreadsheet_id: str, creds_json: str = "credentials.jso
         row_format += f" {total:<10}\n"
         resultado += row_format
 
-    resultado += "=" * 80 + "\n"
+    resultado += "=" * 100 + "\n"
     resultado += f"Total de registros: {len(registros)}\n"
 
     return resultado
@@ -598,13 +598,13 @@ def list_active_diezmadores(spreadsheet_id: str, creds_json: str = "credentials.
     registros.sort(key=lambda x: x[3], reverse=True)
 
     resultado = "📊 DIEZMADORES ACTIVOS (Con al menos 1 marcado - Ordenado por Total Mayor a Menor)\n"
-    resultado += "=" * 80 + "\n"
+    resultado += "=" * 100 + "\n"
     header_format = f"{'Nro':<5} {'Nombres':<35}"
     for month in month_headers:
         header_format += f" {str(month)[:3]:<3}"
     header_format += f" {'Total':<10}\n"
     resultado += header_format
-    resultado += "-" * 80 + "\n"
+    resultado += "-" * 100 + "\n"
 
     for nro, nombre, total, _, month_values in registros:
         row_format = f"{nro:<5} {nombre:<35}"
@@ -613,7 +613,7 @@ def list_active_diezmadores(spreadsheet_id: str, creds_json: str = "credentials.
         row_format += f" {total:<10}\n"
         resultado += row_format
 
-    resultado += "=" * 80 + "\n"
+    resultado += "=" * 100 + "\n"
     
     if total_personas > 0:
         porcentaje_activos = (len(registros) / total_personas) * 100
@@ -701,14 +701,14 @@ def list_non_diezmadores(
         titulo = f"📋  PERSONAS CON {target_diezmaciones} DIEZMACIONES REGISTRADAS"
 
     resultado = f"{titulo}\n"
-    resultado += "=" * 70 + "\n"
+    resultado += "=" * 100 + "\n"
     resultado += f"{'Nro':<5} {'Nombres':<35} {'Diezmos':<8} {'Total':<10}\n"
-    resultado += "-" * 70 + "\n"
+    resultado += "-" * 100 + "\n"
 
     for nro, nombre, total, cantidad_diezmos in no_diezmadores:
         resultado += f"{nro:<5} {nombre:<35} {cantidad_diezmos:<8} {total:<10}\n"
 
-    resultado += "=" * 70 + "\n"
+    resultado += "=" * 100 + "\n"
 
     if total_personas > 0:
         porcentaje = (len(no_diezmadores) / total_personas) * 100
@@ -801,19 +801,24 @@ def extract_person_info(filename: str) -> tuple[str, str]:
     - 005-Roberto Perez Paredes
     """
     name_clean = filename.replace(".gsheet", "").replace(".xlsx", "").strip()
-    suffixes = ["-SILOE", "-DIEZMOS", "-DIEZMOS", "-SILOE"]
+    suffixes = ["-SILOE", "-DIEZMOS"]
     for suffix in suffixes:
         if name_clean.upper().endswith(suffix.upper()):
             name_clean = name_clean[: -len(suffix)].rstrip("-")
             break
 
-    parts = [part.strip() for part in name_clean.split("-") if part.strip()]
-    if len(parts) >= 2:
-        codigo = parts[0]
-        nombre = " ".join(parts[1:]).strip()
-        return codigo, nombre
+    first_dash = name_clean.find("-")
+    if first_dash == -1:
+        return "", name_clean.strip()
 
-    return "", name_clean
+    codigo = name_clean[:first_dash].strip()
+    second_dash = name_clean.find("-", first_dash + 1)
+    if second_dash != -1:
+        nombre = name_clean[first_dash + 1:second_dash].strip()
+    else:
+        nombre = name_clean[first_dash + 1:].strip()
+
+    return codigo, nombre
 
 
 def find_person_spreadsheet(folder_id: str, persona_ref: str, creds_json: str = "credentials.json") -> dict:
@@ -971,7 +976,7 @@ def generar_reporte_sobre(persona_ref: str, folder_id: str = DEFAULT_DIEZMADORES
         raise ValueError("No se encontraron columnas D1-D5 en el reporte individual.")
     total_col_idx = next((idx for idx, header in enumerate(headers) if normalize_text(header) == "total"), len(headers) - 1)
 
-    reporte = f"\n📋 REPORTE DE SOBRE\n"
+    reporte = f"\n📋 REPORTE DE SOBRE DE DIEZMOS\n"
     reporte += f"Persona: {nombre} ({codigo})\n"
     reporte += f"Año: {year} | Hoja: {sheet_name}\n"
     reporte += "=" * 110 + "\n"
@@ -1017,9 +1022,9 @@ def generar_reporte_por_mes(mes: str, folder_id: str = DEFAULT_DIEZMADORES_FOLDE
     mes_norm = normalize_month_label(mes)
     
     reporte = f"\n📊 REPORTE POR MES - {mes_norm} ({year})\n"
-    reporte += "=" * 80 + "\n"
+    reporte += "=" * 100 + "\n"
     reporte += f"{'Codigo':<10} {'Nombre':<35} {'D1':<12} {'D2':<12} {'D3':<12} {'D4':<12} {'D5':<12}\n"
-    reporte += "-" * 80 + "\n"
+    reporte += "-" * 100 + "\n"
     
     for file in files:
         try:
@@ -1069,7 +1074,7 @@ def generar_reporte_por_mes(mes: str, folder_id: str = DEFAULT_DIEZMADORES_FOLDE
         except Exception as e:
             reporte += f"Aviso en {file['name']}: {str(e)}\n"
     
-    reporte += "=" * 80 + "\n"
+    reporte += "=" * 100 + "\n"
     return reporte
 
 
@@ -1182,7 +1187,7 @@ def menu_principal(spreadsheet_ref: str, creds_json: str = "credentials.json", s
     while True:
         print("\n" + "="*60)
         print(" SISTEMA DE GESTIÓN DE DIEZMOS SILOE")
-        print(" by robperezsystem - v1.2")
+        print(" by robperezsystem - v1.4")
         print("="*60)
         print("1. Gestión de Tablero de Diezmos")
         print("2. Gestión de Sobres de Diezmos")
