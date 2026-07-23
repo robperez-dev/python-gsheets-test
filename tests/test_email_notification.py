@@ -23,3 +23,4 @@ def test_build_notification_email_contains_expected_details():
     assert '250,50' in body
     assert 'enero' in body.lower()
     assert 'D1' in body
+    assert '📬' in body or '💰' in body or '🏛️' in body

@@ -78,19 +78,49 @@ def format_currency_bs(value: float) -> str:
 def build_notification_email(persona_nombre: str, persona_codigo: str, monto: float | str,
                              mes: str, domingo: str | int,
                              tesorero_email: str = DEFAULT_TESORERO_EMAIL) -> tuple[str, str]:
-    """Construye el asunto y cuerpo del correo de notificación al tesorero."""
+    """Construye el asunto y cuerpo de texto del correo de notificación con estilo moderno."""
     monto_texto = format_currency_bs(float(parse_monto(str(monto)))) if not isinstance(monto, (int, float)) else format_currency_bs(float(monto))
-    subject = f"Registro de Diezmos - {persona_nombre}"
+    subject = f"💰 Nuevo registro de diezmos - {persona_nombre}"
     body = (
+        "📬 Notificación de registro de diezmos\n"
+        "=" * 60 + "\n\n"
         f"Hola,\n\n"
-        f"Se ha registrado un monto en el sobre de diezmos para {persona_nombre} ({persona_codigo}).\n"
-        f"Monto: {monto_texto}\n"
-        f"Mes: {normalize_month_label(mes)}\n"
-        f"Domingo: {domingo}\n\n"
-        f"Institución: Iglesia Evangélica Bautista SILOÉ\n\n"
-        f"Este mensaje fue generado automáticamente por el Sistema de Gestión de Diezmos."
+        f"Se ha registrado un nuevo monto en el sobre de diezmos para {persona_nombre} ({persona_codigo}).\n\n"
+        f"💵 Monto: {monto_texto}\n"
+        f"📅 Mes: {normalize_month_label(mes)}\n"
+        f"🗓️ Domingo: {domingo}\n\n"
+        "🏛️ Institución: Iglesia Evangélica Bautista SILOÉ\n\n"
+        "✨ Este mensaje fue generado automáticamente por el Sistema de Gestión de Diezmos.\n"
+        f"📧 Notificación dirigida a: {tesorero_email}"
     )
     return subject, body
+
+
+def build_notification_email_html(persona_nombre: str, persona_codigo: str, monto: float | str,
+                                 mes: str, domingo: str | int,
+                                 tesorero_email: str = DEFAULT_TESORERO_EMAIL) -> str:
+    """Construye la versión HTML del correo con un diseño más moderno."""
+    monto_texto = format_currency_bs(float(parse_monto(str(monto)))) if not isinstance(monto, (int, float)) else format_currency_bs(float(monto))
+    return (
+        f"<!DOCTYPE html>"
+        f"<html lang='es'>"
+        f"<body style='font-family:Arial, sans-serif; background:#f4f7fb; padding:24px; color:#1f2937;'>"
+        f"<div style='max-width:640px; margin:auto; background:#ffffff; border-radius:16px; padding:24px; box-shadow:0 10px 30px rgba(15,23,42,0.08);'>"
+        f"<div style='font-size:28px; font-weight:bold; color:#2563eb; margin-bottom:10px;'>📬 Nuevo registro de diezmos</div>"
+        f"<p style='font-size:16px; margin:0 0 12px;'>Hola,</p>"
+        f"<p style='font-size:16px; margin:0 0 16px;'>Se ha registrado un nuevo monto en el sobre de diezmos para <strong>{persona_nombre} ({persona_codigo})</strong>.</p>"
+        f"<div style='background:#f8fafc; border-left:4px solid #2563eb; padding:14px 16px; border-radius:10px; margin:16px 0;'>"
+        f"<p style='margin:0 0 8px;'><strong>💵 Monto:</strong> {monto_texto}</p>"
+        f"<p style='margin:0 0 8px;'><strong>📅 Mes:</strong> {normalize_month_label(mes)}</p>"
+        f"<p style='margin:0;'><strong>🗓️ Domingo:</strong> {domingo}</p>"
+        f"</div>"
+        f"<p style='margin:8px 0;'><strong>🏛️ Institución:</strong> Iglesia Evangélica Bautista SILOÉ</p>"
+        f"<p style='margin:16px 0 0; color:#64748b; font-size:13px;'>✨ Este mensaje fue generado automáticamente por el Sistema de Gestión de Diezmos.</p>"
+        f"<p style='margin:8px 0 0; color:#64748b; font-size:13px;'>📧 Notificación dirigida a: {tesorero_email}</p>"
+        f"</div>"
+        f"</body>"
+        f"</html>"
+    )
 
 
 def load_email_settings(env_path: str | None = None) -> dict[str, str | int | bool]:
@@ -149,8 +179,9 @@ def send_notification_email(to_email: str, subject: str, body: str,
                              sender_password: str | None = None,
                              smtp_server: str = "smtp.gmail.com",
                              smtp_port: int = 587,
-                             use_ssl: bool = False) -> None:
-    """Envía un correo simple por SMTP."""
+                             use_ssl: bool = False,
+                             html_body: str | None = None) -> None:
+    """Envía un correo simple por SMTP con versión HTML moderna."""
     if not sender_email or not sender_password:
         raise ValueError("Faltan credenciales de correo para enviar la notificación.")
 
@@ -159,6 +190,8 @@ def send_notification_email(to_email: str, subject: str, body: str,
     message["From"] = sender_email
     message["To"] = to_email
     message.set_content(body)
+    if html_body:
+        message.add_alternative(html_body, subtype="html")
 
     if use_ssl:
         with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
@@ -197,6 +230,14 @@ def notify_treasurer_about_registration(persona_nombre: str, persona_codigo: str
         domingo=domingo,
         tesorero_email=recipient,
     )
+    html_body = build_notification_email_html(
+        persona_nombre=persona_nombre,
+        persona_codigo=persona_codigo,
+        monto=monto,
+        mes=mes,
+        domingo=domingo,
+        tesorero_email=recipient,
+    )
 
     try:
         send_notification_email(
@@ -208,6 +249,7 @@ def notify_treasurer_about_registration(persona_nombre: str, persona_codigo: str
             smtp_server=smtp_server,
             smtp_port=smtp_port,
             use_ssl=use_ssl,
+            html_body=html_body,
         )
     except Exception as exc:
         print(f"⚠️ No se pudo enviar el aviso por correo al tesorero: {exc}")
