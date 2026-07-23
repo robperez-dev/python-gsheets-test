@@ -1,6 +1,9 @@
 import json
 import os
 import re
+import smtplib
+import sys
+from email.message import EmailMessage
 from typing import Iterable
 
 from google.oauth2.service_account import Credentials
@@ -39,6 +42,7 @@ MONTH_MAP = {
     "DICIEMBRE": "DIC",
 }
 DEFAULT_DIEZMADORES_FOLDER_ID = "14d72317gO2jg5iM6vnPy16pV1raqVdme"
+DEFAULT_TESORERO_EMAIL = "robertoperezparedes@gmail.com"
 
 
 def normalize_text(value: str) -> str:
@@ -69,6 +73,148 @@ def format_currency_bs(value: float) -> str:
     formatted = f"{value:,.2f}"
     # Cambiar separador de miles a punto y separador decimal a coma
     return "Bs. " + formatted.replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def build_notification_email(persona_nombre: str, persona_codigo: str, monto: float | str,
+                             mes: str, domingo: str | int,
+                             tesorero_email: str = DEFAULT_TESORERO_EMAIL) -> tuple[str, str]:
+    """Construye el asunto y cuerpo del correo de notificación al tesorero."""
+    monto_texto = format_currency_bs(float(parse_monto(str(monto)))) if not isinstance(monto, (int, float)) else format_currency_bs(float(monto))
+    subject = f"Registro de Diezmos - {persona_nombre}"
+    body = (
+        f"Hola,\n\n"
+        f"Se ha registrado un monto en el sobre de diezmos para {persona_nombre} ({persona_codigo}).\n"
+        f"Monto: {monto_texto}\n"
+        f"Mes: {normalize_month_label(mes)}\n"
+        f"Domingo: {domingo}\n\n"
+        f"Institución: Iglesia Evangélica Bautista SILOÉ\n\n"
+        f"Este mensaje fue generado automáticamente por el Sistema de Gestión de Diezmos."
+    )
+    return subject, body
+
+
+def load_email_settings(env_path: str | None = None) -> dict[str, str | int | bool]:
+    """Carga configuraciones de correo desde variables de entorno o desde un archivo .env."""
+    candidate_paths = []
+    if env_path:
+        candidate_paths.append(env_path)
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    candidate_paths.extend([
+        os.path.join(script_dir, ".env"),
+        os.path.join(os.path.dirname(script_dir), ".env"),
+        os.path.join(os.getcwd(), ".env"),
+    ])
+
+    if getattr(sys, "frozen", False):
+        candidate_paths.append(os.path.join(os.path.dirname(sys.executable), ".env"))
+
+    seen = set()
+    for path in candidate_paths:
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as fh:
+                for raw_line in fh:
+                    line = raw_line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, value = line.split("=", 1)
+                    key = key.strip()
+                    value = value.strip().strip("\"'")
+                    if key and key not in os.environ:
+                        os.environ[key] = value
+            break
+
+    recipient = os.getenv("DIEZMOS_TESORERO_EMAIL", DEFAULT_TESORERO_EMAIL)
+    sender_email = os.getenv("DIEZMOS_SENDER_EMAIL")
+    sender_password = os.getenv("DIEZMOS_SENDER_PASSWORD")
+    smtp_server = os.getenv("DIEZMOS_SMTP_SERVER", "smtp.gmail.com")
+    smtp_port = int(os.getenv("DIEZMOS_SMTP_PORT", "587"))
+    use_ssl = str(os.getenv("DIEZMOS_SMTP_USE_SSL", "false")).strip().lower() in {"1", "true", "yes", "si", "sí"}
+
+    return {
+        "recipient": recipient,
+        "sender_email": sender_email,
+        "sender_password": sender_password,
+        "smtp_server": smtp_server,
+        "smtp_port": smtp_port,
+        "use_ssl": use_ssl,
+    }
+
+
+def send_notification_email(to_email: str, subject: str, body: str,
+                             sender_email: str | None = None,
+                             sender_password: str | None = None,
+                             smtp_server: str = "smtp.gmail.com",
+                             smtp_port: int = 587,
+                             use_ssl: bool = False) -> None:
+    """Envía un correo simple por SMTP."""
+    if not sender_email or not sender_password:
+        raise ValueError("Faltan credenciales de correo para enviar la notificación.")
+
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = sender_email
+    message["To"] = to_email
+    message.set_content(body)
+
+    if use_ssl:
+        with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
+            server.login(sender_email, sender_password)
+            server.send_message(message)
+    else:
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            server.login(sender_email, sender_password)
+            server.send_message(message)
+
+
+def notify_treasurer_about_registration(persona_nombre: str, persona_codigo: str, monto: float | str,
+                                        mes: str, domingo: str | int) -> bool:
+    """Intenta enviar un aviso por correo al tesorero cuando se registra un monto."""
+    settings = load_email_settings()
+    recipient = str(settings["recipient"])
+    sender_email = str(settings["sender_email"] or "")
+    sender_password = str(settings["sender_password"] or "")
+    smtp_server = str(settings["smtp_server"])
+    smtp_port = int(settings["smtp_port"])
+    use_ssl = bool(settings["use_ssl"])
+
+    if not sender_email or not sender_password:
+        print(
+            "⚠️ No se pudo enviar el aviso por correo al tesorero porque no están definidas "
+            "DIEZMOS_SENDER_EMAIL y DIEZMOS_SENDER_PASSWORD (o el archivo .env)."
+        )
+        return False
+
+    subject, body = build_notification_email(
+        persona_nombre=persona_nombre,
+        persona_codigo=persona_codigo,
+        monto=monto,
+        mes=mes,
+        domingo=domingo,
+        tesorero_email=recipient,
+    )
+
+    try:
+        send_notification_email(
+            to_email=recipient,
+            subject=subject,
+            body=body,
+            sender_email=sender_email,
+            sender_password=sender_password,
+            smtp_server=smtp_server,
+            smtp_port=smtp_port,
+            use_ssl=use_ssl,
+        )
+    except Exception as exc:
+        print(f"⚠️ No se pudo enviar el aviso por correo al tesorero: {exc}")
+        return False
+
+    print(f"✅ Aviso por correo enviado a {recipient}.")
+    return True
 
 
 def get_credentials(creds_json: str = "credentials.json"):
@@ -935,7 +1081,17 @@ def registrar_monto_sobre(persona_ref: str, mes: str, domingo: str | int, monto:
     ).execute()
     
     mensaje_monto = format_currency_bs(float(monto))
-    return f"{mensaje_monto} registrado en {nombre} ({codigo}) - {normalize_month_label(mes)} - {domingo}"
+    resultado = f"{mensaje_monto} registrado en {nombre} ({codigo}) - {normalize_month_label(mes)} - {domingo}"
+
+    notify_treasurer_about_registration(
+        persona_nombre=nombre,
+        persona_codigo=codigo,
+        monto=monto,
+        mes=mes,
+        domingo=domingo,
+    )
+
+    return resultado
 
 
 def generar_reporte_sobre(persona_ref: str, folder_id: str = DEFAULT_DIEZMADORES_FOLDER_ID,
@@ -1186,8 +1342,8 @@ def menu_principal(spreadsheet_ref: str, creds_json: str = "credentials.json", s
     """Menú principal redesñado con dos áreas de gestión."""
     while True:
         print("\n" + "="*60)
-        print(" SISTEMA DE GESTIÓN DE DIEZMOS SILOE")
-        print(" by robperezsystem - v1.4")
+        print(" SISTEMA DE GESTIÓN DE DIEZMOS - IGLESIA SILOE")
+        print(" by robperezsystems - v1.6")
         print("="*60)
         print("1. Gestión de Tablero de Diezmos")
         print("2. Gestión de Sobres de Diezmos")

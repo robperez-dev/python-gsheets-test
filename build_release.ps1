@@ -24,6 +24,11 @@ foreach ($item in $specs) {
     Write-Host "Generando $($item.BaseName)-$Version.exe..."
     py -3 -m PyInstaller --noconfirm --distpath "$repoRoot\dist" "$tempSpec"
 
+    $envFile = Join-Path $repoRoot ".env"
+    if (Test-Path $envFile) {
+        Copy-Item $envFile "$repoRoot\dist\.env" -Force
+    }
+
     Remove-Item $tempSpec -Force -ErrorAction SilentlyContinue
 }
 
